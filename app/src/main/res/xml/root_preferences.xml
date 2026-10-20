@@ -28,6 +28,27 @@
             app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="@string/mcp_server" app:iconSpaceReserved="false">
+        <SwitchPreference
+            app:key="mcp_server_enabled"
+            app:title="@string/mcp_server_enabled"
+            app:summary="@string/mcp_server_enabled_summary"
+            app:iconSpaceReserved="false"
+            app:defaultValue="false" />
+
+        <EditTextPreference
+            app:key="mcp_server_port"
+            app:title="@string/mcp_server_port"
+            app:defaultValue="8080"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            app:key="mcp_server_address"
+            app:title="@string/mcp_server_address_title"
+            app:summary="@string/mcp_server_address_summary"
+            app:iconSpaceReserved="false" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="@string/tcp_udp_exporter" app:iconSpaceReserved="false">
         <EditTextPreference
             app:key="collector_host"

@@ -1,5 +1,5 @@
 <resources>
-    <string name="pcapdroid_app_name" translatable="false">PCAPdroid</string>
+    <string name="pcapdroid_app_name" translatable="false">PCAPdroid MCP v2.1-诗情</string>
     <string name="default_collector_host" translatable="false">127.0.0.1</string>
     <string name="default_collector_port" translatable="false">1234</string>
     <string name="ip_and_port" translatable="false">%1$s:%2$d</string>
@@ -82,6 +82,15 @@
     <string name="udp_exporter_info">Send the PCAP to a remote UDP receiver</string>
     <string name="tcp_exporter_info">Send the PCAP to a remote TCP receiver (pcap-over-ip)</string>
     <string name="http_server_port">HTTP server port</string>
+    <string name="mcp_server">MCP server</string>
+    <string name="mcp_server_enabled">Enable MCP server</string>
+    <string name="mcp_server_enabled_summary">Run the MCP server so AI clients can connect; applies when the app starts or returns to the main screen</string>
+    <string name="mcp_server_port">MCP port</string>
+    <string name="mcp_keepalive_title">MCP server is active</string>
+    <string name="mcp_keepalive_text">Waiting for AI clients to connect</string>
+    <string name="mcp_server_address_title">MCP connect address</string>
+    <string name="mcp_server_address_summary">Enable the MCP server to see its address</string>
+    <string name="mcp_address_copied">MCP address copied to clipboard</string>
     <string name="receiver_host">Collector host</string>
     <string name="receiver_port">Collector port</string>
     <string name="traffic_dump">Traffic dump</string>

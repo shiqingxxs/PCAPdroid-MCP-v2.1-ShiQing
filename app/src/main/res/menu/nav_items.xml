@@ -33,22 +33,6 @@
     </group>
     <group android:id="@+id/group_social">
         <item
-            android:id="@+id/action_open_user_guide"
-            android:title="@string/user_guide"
-            android:icon="@drawable/ic_book" />
-        <item
-            android:id="@+id/action_donate"
-            android:title="@string/donate"
-            android:icon="@drawable/ic_money" />
-        <item
-            android:id="@+id/action_share_app"
-            android:title="@string/share"
-            android:icon="@drawable/ic_share" />
-        <item
-            android:id="@+id/action_open_telegram"
-            android:title="@string/open_telegram_group"
-            android:icon="@drawable/ic_telegram" />
-        <item
             android:id="@+id/action_about"
             android:title="@string/about"
             android:icon="@drawable/ic_copyright" />

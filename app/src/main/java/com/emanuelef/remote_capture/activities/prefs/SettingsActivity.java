@@ -21,8 +21,14 @@ package com.emanuelef.remote_capture.activities.prefs;
 
 import android.app.LocaleManager;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -202,6 +208,9 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
         private SettingsBackupHandler mBackupHandler;
         private boolean mHasStartedMitmWizard;
         private boolean mRootDecryptionNoticeShown = false;
+        private EditTextPreference mMcpServerPort;
+        private Preference mMcpServerAddress;
+        private ConnectivityManager.NetworkCallback mMcpNetworkCallback;
 
         @Override
         public void onCreatePreferences(Bundle savedInstanceState, String rootKey) {
@@ -211,6 +220,7 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
 
             setupExporterPrefs();
             setupHttpServerPrefs();
+            setupMcpPrefs();
             setupTrafficInspectionPrefs();
             setupCapturePrefs();
             setupSecurityPrefs();
@@ -257,6 +267,8 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
         public void onResume() {
             super.onResume();
 
+            updateMcpEndpoint(null);
+
             if(mHasStartedMitmWizard && !MitmAddon.needsSetup(requireContext())) {
                 Log.d(TAG, "mitm setup complete, enabling");
                 mTlsDecryption.setChecked(true);
@@ -265,6 +277,18 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
             mHasStartedMitmWizard = false;
         }
 
+        @Override
+        public void onDestroyView() {
+            super.onDestroyView();
+            if(mMcpNetworkCallback != null) {
+                ConnectivityManager cm = (ConnectivityManager) requireContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+                if(cm != null) {
+                    try { cm.unregisterNetworkCallback(mMcpNetworkCallback); }
+                    catch(IllegalArgumentException ignored) {}
+                }
+                mMcpNetworkCallback = null;
+            }
+        }
         private @NonNull <T extends Preference> T requirePreference(String key) {
             T pref = findPreference(key);
             if(pref == null)
@@ -288,6 +312,94 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
             /* HTTP Server port validation */
             EditTextPreference mHttpServerPort = requirePreference(Prefs.PREF_HTTP_SERVER_PORT);
             mHttpServerPort.setOnPreferenceChangeListener((preference, newValue) -> Utils.validatePort(newValue.toString()));
+        }
+
+        private void setupMcpPrefs() {
+            /* MCP server port validation */
+            mMcpServerPort = requirePreference(Prefs.PREF_MCP_PORT);
+            mMcpServerPort.setOnBindEditTextListener(editText -> editText.setInputType(InputType.TYPE_CLASS_NUMBER));
+            mMcpServerPort.setOnPreferenceChangeListener((preference, newValue) -> {
+                boolean ok = Utils.validatePort(newValue.toString());
+                if(ok)
+                    updateMcpEndpoint(newValue.toString());
+                return ok;
+            });
+
+            /* Read-only, tap-to-copy MCP endpoint address. */
+            mMcpServerAddress = requirePreference(Prefs.PREF_MCP_ADDRESS);
+            mMcpServerAddress.setOnPreferenceClickListener(preference -> {
+                CharSequence address = mMcpServerAddress.getSummary();
+                if((address != null) && (address.length() > 0)) {
+                    ClipboardManager cm = (ClipboardManager) requireContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                    if(cm != null) {
+                        cm.setPrimaryClip(ClipData.newPlainText(getString(R.string.mcp_server_address_title), address.toString()));
+                        Utils.showToast(requireContext(), R.string.mcp_address_copied);
+                    }
+                }
+                return true;
+            });
+
+            /* Show the endpoint the MCP server is reachable at (http://<ip>:<port>/sse),
+             * so the user can see the IP without guessing. Recomputed on preference change
+             * and whenever the active network changes. */
+            updateMcpEndpoint(null);
+            registerMcpNetworkCallback(requireContext());
+        }
+
+        /* Build the endpoint URL from the current local IP and MCP port and show it as the
+         * summary of the port preference. */
+        private void updateMcpEndpoint(String portOverride) {
+            if(mMcpServerPort == null)
+                return;
+            Context ctx = getContext();
+            if(ctx == null)
+                return;
+            String ip = Utils.getLocalIPAddress(ctx);
+            if((ip == null) || ip.isEmpty() || ip.equals("0.0.0.0"))
+                ip = "127.0.0.1";
+            String port = (portOverride != null) ? portOverride :
+                    PreferenceManager.getDefaultSharedPreferences(ctx).getString(Prefs.PREF_MCP_PORT, "8080");
+            String endpoint = "http://" + ip + ":" + port + "/sse";
+            mMcpServerPort.setSummary(endpoint);
+            if(mMcpServerAddress != null)
+                mMcpServerAddress.setSummary(endpoint);
+        }
+
+        /* Keep the MCP endpoint summary in sync when the active network (e.g. WiFi)
+         * changes, so the displayed IP is never stale. */
+        private void registerMcpNetworkCallback(Context ctx) {
+            if(mMcpNetworkCallback != null)
+                return;
+
+            ConnectivityManager cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if(cm == null)
+                return;
+
+            mMcpNetworkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(@NonNull Network network) { refreshMcpSummary(); }
+
+                @Override
+                public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities caps) {
+                    refreshMcpSummary();
+                }
+            };
+
+            try {
+                cm.registerNetworkCallback(new NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), mMcpNetworkCallback);
+            } catch(SecurityException e) {
+                /* requires ACCESS_NETWORK_STATE, which PCAPdroid already holds */
+                mMcpNetworkCallback = null;
+            }
+        }
+
+        private void refreshMcpSummary() {
+            if((mMcpServerPort == null) || !isAdded())
+                return;
+            View v = getView();
+            if(v != null)
+                v.post(() -> updateMcpEndpoint(null));
         }
 
         private boolean rootCaptureEnabled() {
@@ -342,8 +454,7 @@ public class SettingsActivity extends BaseActivity implements PreferenceFragment
                     rootCaptureHideShow((Boolean) newValue);
                     return checkDecrpytionWithRoot((Boolean) newValue, mTlsDecryption.isChecked());
                 });
-            } else
-                mRootCaptureEnabled.setVisible(false);
+            }
 
             mRestartOnDisconnect = requirePreference(Prefs.PREF_RESTART_ON_DISCONNECT);
             mRestartOnDisconnect.setVisible(VpnReconnectService.isAvailable());

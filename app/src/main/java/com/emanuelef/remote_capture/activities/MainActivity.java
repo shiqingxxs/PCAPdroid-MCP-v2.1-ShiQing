@@ -53,12 +53,14 @@ import androidx.viewpager2.widget.ViewPager2;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.emanuelef.remote_capture.AppsResolver;
 import com.emanuelef.remote_capture.Billing;
@@ -67,6 +69,8 @@ import com.emanuelef.remote_capture.CaptureHelper;
 import com.emanuelef.remote_capture.ConnectionsRegister;
 import com.emanuelef.remote_capture.Log;
 import com.emanuelef.remote_capture.MitmReceiver;
+import com.emanuelef.remote_capture.mcp.McpHttpServer;
+import com.emanuelef.remote_capture.McpKeepAliveService;
 import com.emanuelef.remote_capture.PCAPdroid;
 import com.emanuelef.remote_capture.VpnReconnectService;
 import com.emanuelef.remote_capture.activities.prefs.SettingsActivity;
@@ -84,6 +88,7 @@ import com.emanuelef.remote_capture.model.CaptureStats;
 import com.emanuelef.remote_capture.model.ConnectionDescriptor;
 import com.emanuelef.remote_capture.model.ListInfo;
 import com.emanuelef.remote_capture.model.CaptureList;
+import com.emanuelef.remote_capture.model.PayloadChunk;
 import com.emanuelef.remote_capture.model.Prefs;
 import com.emanuelef.remote_capture.R;
 import com.emanuelef.remote_capture.Utils;
@@ -91,19 +96,23 @@ import com.google.android.material.navigation.NavigationView;
 import com.google.android.material.tabs.TabLayout;
 import com.google.android.material.tabs.TabLayoutMediator;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends BaseActivity implements NavigationView.OnNavigationItemSelectedListener {
     private Billing mIab;
+    private McpHttpServer mMcpServer;
     private ViewPager2 mPager;
     private AppState mState;
     private AppStateListener mListener;
@@ -244,6 +253,10 @@ public class MainActivity extends BaseActivity implements NavigationView.OnNavig
             } else /* STOPPED -> STOPPED */
                 appStateReady();
         });
+
+        // Embedded MCP HTTP+SSE transport (GET /sse, POST /messages, GET /health).
+        // Started/stopped according to the MCP settings (see applyMcpServer).
+        applyMcpServer();
     }
 
     @Override
@@ -255,6 +268,169 @@ public class MainActivity extends BaseActivity implements NavigationView.OnNavig
         }
 
         mCapHelper = null;
+        stopMcpServer();
+    }
+
+    /* Start the lightweight MCP HTTP server on a background thread. */
+    private void startMcpServer() {
+        if(mMcpServer != null)
+            return;
+
+        String ip = Utils.getLocalIPAddress(MainActivity.this);
+        if((ip == null) || ip.isEmpty())
+            ip = "127.0.0.1";
+        final String serverIp = ip;
+
+        final int port = Prefs.getMcpPort(mPrefs);
+
+        mMcpServer = new McpHttpServer(port);
+        mMcpServer.setServerIp(serverIp);
+        mMcpServer.setConnectionProvider(new McpHttpServer.ConnectionProvider() {
+            @Override
+            public List<Map<String, Object>> getRecentConnections() {
+                return MainActivity.this.getRecentConnections();
+            }
+
+            @Override
+            public String getConnectionPayload(int incr_id, String direction, int max_bytes) {
+                return MainActivity.this.getConnectionPayload(incr_id, direction, max_bytes);
+            }
+        });
+
+        Thread thread = new Thread(() -> {
+            try {
+                mMcpServer.start();
+                final String url = "http://" + serverIp + ":" + mMcpServer.getPort() + "/sse";
+                Log.i(TAG, "MCP SSE endpoint at " + url);
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "MCP SSE endpoint: " + url,
+                        Toast.LENGTH_LONG).show());
+            } catch(Exception e) {
+                Log.e(TAG, "MCP HTTP server start failed: " + e.getLocalizedMessage());
+                stopMcpServer();
+            }
+        }, "McpServerStart");
+        thread.setDaemon(true);
+        thread.start();
+
+        // Keep the process alive while the MCP server is running so that it stays
+        // reachable when the app is in the background / during Doze.
+        McpKeepAliveService.start(this);
+    }
+
+    /* Data for the MCP "list-recent-connections" tool. Runs on a POST handler thread. */
+    private List<Map<String, Object>> getRecentConnections() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        ConnectionsRegister reg = CaptureService.getConnsRegister();
+        if(reg == null)
+            return out;
+
+        AppsResolver resolver = new AppsResolver(this);
+        int n = reg.getConnCount();
+        int start = Math.max(0, n - 50); // last 50 connections
+        for(int idx = start; idx < n; idx++) {
+            ConnectionDescriptor c = reg.getConn(idx);
+            if(c == null)
+                continue;
+            Map<String, Object> m = new HashMap<>();
+            AppDescriptor app = resolver.getAppByUid(c.uid, 0);
+            m.put("app", (app != null) ? app.getName() : ("uid-" + c.uid));
+            m.put("uid", c.uid);
+            m.put("incr_id", c.incr_id);
+            m.put("dst_ip", c.dst_ip);
+            m.put("dst_port", c.dst_port);
+            m.put("transport", (c.ipproto == 6) ? "TCP" : (c.ipproto == 17) ? "UDP" : Integer.toString(c.ipproto));
+            m.put("l7_protocol", c.l7proto);
+            m.put("sent_bytes", c.sent_bytes);
+            m.put("rcvd_bytes", c.rcvd_bytes);
+            m.put("last_seen", c.last_seen);
+            out.add(m);
+        }
+        return out;
+    }
+
+    public String getConnectionPayload(int incr_id, String direction, int max_bytes) {
+        ConnectionsRegister reg = CaptureService.getConnsRegister();
+        ConnectionDescriptor conn = (reg != null) ? reg.getConnById(incr_id) : null;
+        if(conn == null)
+            return "{\"incr_id\":" + incr_id + ",\"status\":\"unavailable\",\"reason\":\"connection not found (may have been overwritten by the ring buffer)\"}";
+
+        boolean wantReq = true, wantRsp = true;
+        if("request".equals(direction)) wantRsp = false;
+        else if("response".equals(direction)) wantReq = false;
+
+        ByteArrayOutputStream req = new ByteArrayOutputStream();
+        ByteArrayOutputStream rsp = new ByteArrayOutputStream();
+        int chunks_read = 0, chunks_unavailable = 0;
+        int n = conn.getNumPayloadChunks();
+
+        for(int idx = 0; idx < n; idx++) {
+            boolean isSent = conn.isChunkSent(idx);
+            if(isSent && !wantReq) continue;
+            if(!isSent && !wantRsp) continue;
+
+            /* in-memory chunk (live capture / reassembled HTTP) first, else read from the PCAP file */
+            PayloadChunk chunk = conn.getPayloadChunk(idx);
+            if((chunk == null) || (chunk.payload == null))
+                chunk = conn.readPayloadChunk(idx, max_bytes);
+            if((chunk == null) || (chunk.payload == null)) {
+                chunks_unavailable++;   /* read failed / data overwritten -> report, don't crash */
+                continue;
+            }
+
+            ByteArrayOutputStream sink = isSent ? req : rsp;
+            int remaining = max_bytes - sink.size();
+            if(remaining <= 0)
+                break;
+            int take = Math.min(chunk.payload.length, remaining);
+            sink.write(chunk.payload, 0, take);
+            chunks_read++;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"incr_id\":").append(incr_id)
+          .append(",\"direction\":\"").append(jsonSafe(direction == null ? "both" : direction)).append("\"")
+          .append(",\"status\":\"").append(chunks_unavailable > 0 ? "partial" : "ok").append("\"")
+          .append(",\"chunks_read\":").append(chunks_read)
+          .append(",\"chunks_unavailable\":").append(chunks_unavailable);
+        boolean firstBody = true;
+        if(wantReq) { appendBody(sb, firstBody, "request", req.toByteArray()); firstBody = false; }
+        if(wantRsp) { appendBody(sb, firstBody, "response", rsp.toByteArray()); firstBody = false; }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static void appendBody(StringBuilder sb, boolean first, String name, byte[] body) {
+        if(!first) sb.append(',');
+        sb.append('"').append(name).append("\":{\"bytes\":").append(body.length);
+        String text = Utils.decodeUtf8Strict(body);
+        if(text != null)
+            sb.append(",\"encoding\":\"text\",\"text\":\"").append(jsonSafe(text)).append('"');
+        else
+            sb.append(",\"encoding\":\"base64\",\"base64\":\"")
+              .append(Base64.encodeToString(body, Base64.NO_WRAP)).append('"');
+        sb.append('}');
+    }
+
+    private static String jsonSafe(String s) {
+        if(s == null) return "";
+        return s.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t");
+    }
+
+    /* Start/stop the MCP server to match the current preferences. Called from onCreate and
+     * onResume, so a change made in Settings is applied when back to the main UI. */
+    private void applyMcpServer() {
+        if(Prefs.isMcpEnabled(mPrefs))
+            startMcpServer();
+        else
+            stopMcpServer();
+    }
+    private void stopMcpServer() {
+        if(mMcpServer != null) {
+            mMcpServer.stop();
+            mMcpServer = null;
+        }
+        McpKeepAliveService.stop(this);
     }
 
     @Override
@@ -286,6 +462,7 @@ public class MainActivity extends BaseActivity implements NavigationView.OnNavig
             navMenu.findItem(R.id.tls_decryption).setVisible(tls_decryption && !root_capture);
         }
 
+        applyMcpServer();
         checkPaidDrawerEntries();
     }
 
@@ -622,14 +799,6 @@ public class MainActivity extends BaseActivity implements NavigationView.OnNavig
         } else if(id == R.id.open_log) {
             Intent intent = new Intent(MainActivity.this, LogviewActivity.class);
             startActivity(intent);
-        } else if (id == R.id.action_donate) {
-            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(DONATE_URL));
-            Utils.startActivity(this, browserIntent);
-        } else if (id == R.id.action_open_telegram) {
-            openTelegram();
-        } else if (id == R.id.action_open_user_guide) {
-            Intent browserIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(DOCS_URL));
-            Utils.startActivity(this, browserIntent);
         } else if (id == R.id.action_stats) {
             if(CaptureService.getConnsRegister() != null) {
                 Intent intent = new Intent(MainActivity.this, StatsActivity.class);
@@ -639,16 +808,6 @@ public class MainActivity extends BaseActivity implements NavigationView.OnNavig
         } else if (id == R.id.action_about) {
             Intent intent = new Intent(MainActivity.this, AboutActivity.class);
             startActivity(intent);
-        } else if (id == R.id.action_share_app) {
-            String description = getString(R.string.about_text);
-            String getApp = getString(R.string.get_app);
-            String url = "https://play.google.com/store/apps/details?id=com.emanuelef.remote_capture";
-
-            Intent intent = new Intent(android.content.Intent.ACTION_SEND);
-            intent.setType("text/plain");
-            intent.putExtra(android.content.Intent.EXTRA_TEXT, description + "\n" + getApp + "\n" + url);
-
-            Utils.startActivity(this, Intent.createChooser(intent, getResources().getString(R.string.share)));
         }
 
         return false;

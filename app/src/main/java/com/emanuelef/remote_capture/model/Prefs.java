@@ -75,6 +75,9 @@ public class Prefs {
     public static final String PREF_APP_FILTER = "app_filter";
     public static final String PREF_APP_FILTER_ENABLED = "app_filter_enabled";
     public static final String PREF_HTTP_SERVER_PORT = "http_server_port";
+    public static final String PREF_MCP_ENABLED = "mcp_server_enabled";
+    public static final String PREF_MCP_PORT = "mcp_server_port";
+    public static final String PREF_MCP_ADDRESS = "mcp_server_address";
     public static final String PREF_PCAP_DUMP_MODE = "pcap_dump_mode_v2";
     public static final String PREF_IP_MODE = "ip_mode";
     public static final String PREF_APP_LANGUAGE = "app_language";
@@ -226,6 +229,13 @@ public class Prefs {
     public static int getCollectorPort(SharedPreferences p)  { return(Integer.parseInt(p.getString(PREF_COLLECTOR_PORT_KEY, "1234"))); }
     public static DumpMode getDumpMode(SharedPreferences p)  { return(getDumpMode(p.getString(PREF_PCAP_DUMP_MODE, DEFAULT_DUMP_MODE))); }
     public static int getHttpServerPort(SharedPreferences p) { return(Integer.parseInt(p.getString(Prefs.PREF_HTTP_SERVER_PORT, "8080"))); }
+
+    public static boolean isMcpEnabled(SharedPreferences p) { return(p.getBoolean(PREF_MCP_ENABLED, false)); }
+
+    public static int getMcpPort(SharedPreferences p) {
+        try { return(Integer.parseInt(p.getString(PREF_MCP_PORT, "8080"))); }
+        catch(NumberFormatException e) { return 8080; }
+    }
     public static boolean getTlsDecryptionEnabled(SharedPreferences p) { return(p.getBoolean(PREF_TLS_DECRYPTION_KEY, false)); }
     public static boolean getSocks5Enabled(SharedPreferences p)     { return(p.getBoolean(PREF_SOCKS5_ENABLED_KEY, false)); }
     public static String getSocks5ProxyHost(SharedPreferences p)    { return(p.getString(PREF_SOCKS5_PROXY_IP_KEY, "0.0.0.0")); }

@@ -180,6 +180,15 @@ public class Utils {
     public static final int UID_NO_FILTER = -2;
     public static final int LOW_HEAP_THRESHOLD = 10485760 /* 10 MB */;
     private static Boolean rootAvailable = null;
+    // Well-known su binaries / Magisk flags, checked with File.exists() only (no process spawn).
+    private static final String[] ROOT_CHECK_PATHS = {
+            "/system/xbin/su",
+            "/system/bin/su",
+            "/sbin/su",
+            "/system/sbin/su",
+            "/data/adb/magisk",
+            "/sbin/.magisk"
+    };
     private static Locale primaryLocale = null;
     private static String[] l7Protocols = null;
 
@@ -1087,6 +1096,18 @@ public class Utils {
 
                     if(f.exists()) {
                         Log.d("isRootAvailable", "'su' binary found at " + f.getAbsolutePath());
+                        rootAvailable = true;
+                        break;
+                    }
+                }
+            }
+
+            // Well-known su binaries and Magisk flags; File.exists() only, no process spawn.
+            // Runs exactly once (rootAvailable still null) and is fast pure filesystem IO.
+            if(!rootAvailable) {
+                for(String suPath : ROOT_CHECK_PATHS) {
+                    if(new File(suPath).exists()) {
+                        Log.d("isRootAvailable", "root indicator found at " + suPath);
                         rootAvailable = true;
                         break;
                     }
